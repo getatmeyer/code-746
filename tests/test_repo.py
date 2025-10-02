@@ -1,10 +1,8 @@
-# tests/test_repo_miner.py
-
 import os
 import pandas as pd
 import pytest
 from datetime import datetime, timedelta
-from src.repo_miner import fetch_commits
+from src.repo_miner import fetch_commits, fetch_issues
 
 # --- Helpers for dummy GitHub API objects ---
 
@@ -50,7 +48,6 @@ class DummyRepo:
         return self._commits
 
     def get_issues(self, state="all"):
-        # filter by state
         if state == "all":
             return self._issues
         return [i for i in self._issues if i.state == state]
@@ -59,24 +56,19 @@ class DummyGithub:
     def __init__(self, token):
         assert token == "fake-token"
     def get_repo(self, repo_name):
-        # ignore repo_name; return repo set in test fixture
         return self._repo
 
 @pytest.fixture(autouse=True)
 def patch_env_and_github(monkeypatch):
-    # Set fake token
     monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
-    # Patch Github class
     monkeypatch.setattr("src.repo_miner.Github", lambda token: gh_instance)
 
-
-# Helper global placeholder
+# Global placeholder
 gh_instance = DummyGithub("fake-token")
 
-# --- Tests for fetch_commits ---
-# An example test case
+# ------------------- Commit Tests -------------------
+
 def test_fetch_commits_basic(monkeypatch):
-    # Setup dummy commits
     now = datetime.now()
     commits = [
         DummyCommit("sha1", "Alice", "a@example.com", now, "Initial commit\nDetails"),
@@ -89,21 +81,18 @@ def test_fetch_commits_basic(monkeypatch):
     assert df.iloc[0]["message"] == "Initial commit"
 
 def test_fetch_commits_limit(monkeypatch):
-    # More commits than max_commits
     now = datetime.now()
     commits = [
         DummyCommit("sha1", "Alice", "a@example.com", now, "Initial commit"),
         DummyCommit("sha2", "Bob", "b@example.com", now, "Bug fix"),
     ]
     gh_instance._repo = DummyRepo(commits, [])
-
     df = fetch_commits("any/repo", max_commits=1)
     assert not df.empty
     assert len(df) == 1
 
 def test_fetch_commits_empty(monkeypatch):
     gh_instance._repo = DummyRepo([], [])
-
     df = fetch_commits("any/repo")
     assert df.empty
     assert list(df.columns) == ["sha", "author", "email", "date", "message"]
@@ -115,23 +104,63 @@ def test_fetch_commits_message_content(monkeypatch):
         DummyCommit("sha2", "Bob", "b@example.com", now, "Bug fix applied"),
     ]
     gh_instance._repo = DummyRepo(commits, [])
-
     df = fetch_commits("any/repo")
-
-    # Make sure both commits appear
     assert len(df) == 2
-    # Check that messages are correctly captured (first line only)
     assert df.iloc[0]["message"] == "Initial commit with details"
     assert df.iloc[1]["message"] == "Bug fix applied"
 
 def test_fetch_commits_date_format(monkeypatch):
     now = datetime.now()
-    commits = [
-        DummyCommit("sha1", "Alice", "a@example.com", now, "Initial commit"),
-    ]
+    commits = [DummyCommit("sha1", "Alice", "a@example.com", now, "Initial commit")]
     gh_instance._repo = DummyRepo(commits, [])
-
     df = fetch_commits("any/repo")
     assert len(df) == 1
-    # Date should look like an ISO string (YYYY-MM-DDTHH:MM:SS)
     assert "T" in df.iloc[0]["date"]
+
+# ------------------- Issue Tests -------------------
+
+def test_fetch_issues_basic(monkeypatch):
+    now = datetime.now()
+    issues = [
+        DummyIssue(1, 101, "Bug in login", "alice", "open", now, None, 5),
+        DummyIssue(2, 102, "Fix typo", "bob", "closed", now - timedelta(days=2), now - timedelta(days=1), 2)
+    ]
+    gh_instance._repo = DummyRepo([], issues)
+    df = fetch_issues("any/repo", state="all")
+    assert not df.empty
+    assert list(df.columns) == [
+        "id", "number", "title", "user", "state",
+        "created_at", "closed_at", "comments", "open_duration_days"
+    ]
+    assert len(df) == 2
+    assert df.iloc[0]["title"] == "Bug in login"
+    assert df.iloc[1]["state"] == "closed"
+
+def test_fetch_issues_prs_excluded(monkeypatch):
+    now = datetime.now()
+    issues = [
+        DummyIssue(3, 103, "PR should be skipped", "carol", "open", now, None, 1, is_pr=True),
+        DummyIssue(4, 104, "Valid issue", "dave", "open", now, None, 0)
+    ]
+    gh_instance._repo = DummyRepo([], issues)
+    df = fetch_issues("any/repo", state="all")
+    assert len(df) == 1
+    assert df.iloc[0]["title"] == "Valid issue"
+
+def test_fetch_issues_date_normalization(monkeypatch):
+    now = datetime.now()
+    issues = [DummyIssue(5, 105, "Check date", "eve", "open", now, None, 0)]
+    gh_instance._repo = DummyRepo([], issues)
+    df = fetch_issues("any/repo", state="all")
+    assert len(df) == 1
+    assert "T" in df.iloc[0]["created_at"]
+
+def test_fetch_issues_open_duration(monkeypatch):
+    now = datetime.now()
+    issues = [
+        DummyIssue(6, 106, "Closed issue", "frank", "closed", now - timedelta(days=5), now, 3)
+    ]
+    gh_instance._repo = DummyRepo([], issues)
+    df = fetch_issues("any/repo", state="closed")
+    assert len(df) == 1
+    assert df.iloc[0]["open_duration_days"] == 5

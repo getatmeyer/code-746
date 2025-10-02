@@ -195,6 +195,55 @@ def fetch_commits(repo_full_name: str, max_commits: int = None) -> pd.DataFrame:
         return pd.DataFrame(columns=["sha", "author", "email", "date", "message"])
     return pd.DataFrame(commit_records)
 
+#. <<< fetch_issues
+def fetch_issues(repo_full_name: str, state: str = "all", max_issues: int = None) -> pd.DataFrame:
+    """
+    Fetch issues from a GitHub repository into a DataFrame.
+    Columns: id, number, title, user, state, created_at, closed_at, comments, open_duration_days
+    """
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise ValueError("GITHUB_TOKEN environment variable not set.")
+
+    g = Github(github_token)
+    repo = g.get_repo(repo_full_name)
+
+    issues = repo.get_issues(state=state)
+    issue_records = []
+
+    count = 0
+    for issue in issues:
+        # Skip pull requests (they also show up in issues)
+        if hasattr(issue, "pull_request") and issue.pull_request is not None:
+            continue
+
+        record = {
+            "id": issue.id,
+            "number": issue.number,
+            "title": issue.title,
+            "user": issue.user.login if issue.user else None,
+            "state": issue.state,
+            "created_at": issue.created_at.isoformat() if issue.created_at else None,
+            "closed_at": issue.closed_at.isoformat() if issue.closed_at else None,
+            "comments": issue.comments,
+            "open_duration_days": (
+                (issue.closed_at - issue.created_at).days
+                if issue.closed_at and issue.created_at else None
+            )
+        }
+        issue_records.append(record)
+
+        count += 1
+        if max_issues and count >= max_issues:
+            break
+
+    if not issue_records:
+        return pd.DataFrame(columns=[
+            "id", "number", "title", "user", "state",
+            "created_at", "closed_at", "comments", "open_duration_days"
+        ])
+    return pd.DataFrame(issue_records)
+
 
 def main():
     """
@@ -213,13 +262,30 @@ def main():
                     help="Max number of commits to fetch")
     c1.add_argument("--out",  required=True, help="Path to output commits CSV")
 
+    # Sub-command: fetch-issues
+    c2 = subparsers.add_parser("fetch-issues", help="Fetch issues and save to CSV")
+    c2.add_argument("--repo", required=True, help="Repository in owner/repo format")
+    c2.add_argument("--state", choices=["all", "open", "closed"], default="all",
+                    help="Which issues to fetch")
+    c2.add_argument("--max", type=int, dest="max_issues",
+                    help="Max number of issues to fetch")
+    c2.add_argument("--out", required=True, help="Path to output issues CSV")
+
     args = parser.parse_args()
 
-    # Dispatch based on selected command
+     # <<<Dispatch based on fetch-commits  >>> ------------------------------------------
     if args.command == "fetch-commits":
         df = fetch_commits(args.repo, args.max_commits)
         df.to_csv(args.out, index=False)
         print(f"Saved {len(df)} commits to {args.out}")
+    # <<< END Dispatcher >>> ------------------------------------------
+
+
+     # <<< Dispatcher based on fetch-issues >>> ------------------------------------------
+    if args.command == "fetch-issues":
+        df = fetch_issues(args.repo, args.state, args.max_issues)
+        df.to_csv(args.out, index=False)
+        print(f"Saved {len(df)} issues to {args.out}")
 
 
 if __name__ == "__main__":
