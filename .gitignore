@@ -1,4 +1,5 @@
 commits.csv
+issues.csv
 venv/
 __pycache__/
 *.pyc
